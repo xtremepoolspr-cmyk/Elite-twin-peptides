@@ -239,6 +239,7 @@ const lastDose = c => (c.dosis || []).map(d => d.fecha).sort().pop();
 function viewCli(v) {
   v.innerHTML = `
   <div class="row between"><div class="stack sm"><h1 class="page-title">Clientes</h1><p class="sub">${db.clientes.length ? `${db.clientes.length} guardados en este dispositivo` : 'Guarda protocolos, dosis y medidas'}</p></div><button class="btn accent sm" data-act="cli-new">${ICON.plus} Cliente</button></div>
+  ${backupNotice()}
   ${db.clientes.length ? `<input type="search" id="cli-q" placeholder="Buscar cliente" value="${esc(S.cli.q)}" aria-label="Buscar cliente">` : ''}
   <div class="list" id="cliList"></div>`;
   cliList();
@@ -402,14 +403,23 @@ function vialForm(x) {
 }
 
 /* ---------- ajustes y avisos ---------- */
+let installEv = null;
+const standalone = () => (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) || navigator.standalone === true;
+const appCard = () => standalone() ? '' : `<div class="card flat stack sm"><div class="section-title">Instalar en el teléfono</div>${installEv
+  ? `<p class="sub">Instálala para abrirla como una app y usarla sin internet.</p><button class="btn accent sm" data-act="install">Instalar app</button>`
+  : `<p class="sub"><b>Android (Chrome):</b> menú ⋮ y luego "Instalar app" o "Añadir a pantalla de inicio".<br><b>iPhone (Safari):</b> botón Compartir y luego "Añadir a pantalla de inicio".</p>`}</div>`;
+const backupDue = () => db.clientes.length > 0 && (!db.cfg.respaldo || daysBetween(db.cfg.respaldo, today()) > 30);
+const backupNotice = () => backupDue() ? `<div class="notice"><div>${db.cfg.respaldo ? 'Hace más de 30 días que no haces un respaldo.' : 'Aún no has hecho un respaldo de tus clientes.'} <button class="link" data-act="settings">Hacer respaldo</button></div></div>` : '';
 function settingsSheet() {
   return `${head('Ajustes')}<div class="sheet-body">
     <div class="field"><label for="s-tema">Tema</label><select id="s-tema"><option value="auto" ${db.cfg.tema === 'auto' ? 'selected' : ''}>Automático</option><option value="light" ${db.cfg.tema === 'light' ? 'selected' : ''}>Claro</option><option value="dark" ${db.cfg.tema === 'dark' ? 'selected' : ''}>Oscuro</option></select></div>
+    ${appCard()}
     <div class="card flat stack sm"><div class="section-title">Respaldo</div><p class="sub">Tus datos se guardan solo en este dispositivo. Exporta un respaldo para no perderlos o para pasarlos a otro teléfono.</p>
+      <p class="tiny muted">${db.cfg.respaldo ? 'Último respaldo: ' + fdate(db.cfg.respaldo) : 'Aún no has hecho un respaldo.'}</p>
       <div class="row wrap"><button class="btn ghost sm" data-act="export">Exportar respaldo</button><label class="btn ghost sm" for="s-import">Importar respaldo</label><input type="file" id="s-import" accept="application/json,.json" hidden></div></div>
     <button class="btn ghost" data-act="aviso">Aviso importante</button>
     <button class="btn danger" data-act="wipe">Borrar todos los datos</button>
-    <p class="tiny muted">Elite Twin Peptides · ${allPep().length} fichas · versión 1.3</p></div>`;
+    <p class="tiny muted">Elite Twin Peptides · ${allPep().length} fichas · versión 1.4</p></div>`;
 }
 const avisoSheet = lock => `${head('Aviso importante')}<div class="sheet-body">
   <p>Esta app reúne información general y educativa sobre péptidos, lipotrópicos, vitaminas y suplementos, y una calculadora matemática de reconstitución.</p>
@@ -422,6 +432,7 @@ const A = {
   close: closeLayer,
   yes() { const f = S._yes; S._yes = null; S.stack.pop(); if (f) f(); renderStack(); },
   settings() { openLayer(settingsSheet); },
+  install() { if (!installEv) return; installEv.prompt(); installEv.userChoice.finally(() => { installEv = null; renderStack(); }); },
   aviso() { openLayer(() => avisoSheet(false)); },
   accept() { db.cfg.aceptado = true; save(); S.stack = []; renderStack(); },
   'calc-water'(el) { $('#c-agua').value = el.dataset.v; readCalc(); calcUpdate(); },
@@ -465,7 +476,7 @@ const A = {
   'vial-del'(el) { const id = el.dataset.id; confirmLayer('Se borrará este vial del inventario.', () => { db.viales = db.viales.filter(v => v.id !== id); save(); S.stack = []; render(); }); },
   export() {
     const blob = new Blob([JSON.stringify({ app: 'peptidospr', v: 1, fecha: new Date().toISOString(), ...db }, null, 1)], { type: 'application/json' });
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `peptidos-respaldo-${today()}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Respaldo exportado');
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `peptidos-respaldo-${today()}.json`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); db.cfg.respaldo = today(); save(); toast('Respaldo exportado');
   },
   wipe() { confirmLayer('Se borrarán todos los clientes, viales y ajustes de este dispositivo.', () => { db = { clientes: [], viales: [], custom: [], cfg: { aceptado: true, tema: 'auto' } }; save(); applyTheme(); S.stack = []; render(); toast('Datos borrados'); }); }
 };
@@ -558,5 +569,16 @@ $('[data-act="settings"]').innerHTML = ICON.gear;
 applyTheme();
 render();
 if (!db.cfg.aceptado) openLayer(() => avisoSheet(true), { lock: true });
-if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEv = e; });
+window.addEventListener('appinstalled', () => { installEv = null; toast('App instalada'); });
+try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+/*SW-START*/
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
+  const hadSW = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadSW) toast('Hay una versión nueva. Cierra y abre la app.'); });
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+    .then(r => document.addEventListener('visibilitychange', () => { if (!document.hidden) r.update().catch(() => {}); }))
+    .catch(() => {});
+}
+/*SW-END*/
 })();
